@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	psutils "github.com/shirou/gopsutil/process"
@@ -321,7 +322,7 @@ func runServiceInForeground(ctx context.Context) {
 	fmt.Println("Hit Ctrl+C to stop the service")
 
 	sigIntChannel := make(chan os.Signal, 1)
-	signal.Notify(sigIntChannel, os.Interrupt)
+	signal.Notify(sigIntChannel, os.Interrupt, syscall.SIGTERM)
 
 	checkTimer := time.NewTicker(100 * time.Millisecond)
 	defer checkTimer.Stop()
@@ -340,26 +341,30 @@ func runServiceInForeground(ctx context.Context) {
 				fmt.Println("Steampipe service stopped.")
 				return
 			}
-		case <-sigIntChannel:
+		case signal := <-sigIntChannel:
 			fmt.Print("\r")
 			dashboardserver.StopDashboardService(ctx)
-			// if we have received this signal, then the user probably wants to shut down
-			// everything. Shutdowns MUST NOT happen in cancellable contexts
-			connectedClients, err := db_local.GetClientCount(context.Background())
-			if err != nil {
-				// report the error in the off chance that there's one
-				error_helpers.ShowError(ctx, err)
-				return
-			}
 
-			// we know there will be at least 1 client (connectionWatcher)
-			if connectedClients.TotalClients > 1 {
-				if lastCtrlC.IsZero() || time.Since(lastCtrlC) > 30*time.Second {
-					lastCtrlC = time.Now()
-					fmt.Println(buildForegroundClientsConnectedMsg())
-					continue
+			if signal != syscall.SIGTERM {
+				// if we have received this signal, then the user probably wants to shut down
+				// everything. Shutdowns MUST NOT happen in cancellable contexts
+				connectedClients, err := db_local.GetClientCount(context.Background())
+				if err != nil {
+					// report the error in the off chance that there's one
+					error_helpers.ShowError(ctx, err)
+					return
+				}
+
+				// we know there will be at least 1 client (connectionWatcher)
+				if connectedClients.TotalClients > 1 {
+					if lastCtrlC.IsZero() || time.Since(lastCtrlC) > 30*time.Second {
+						lastCtrlC = time.Now()
+						fmt.Println(buildForegroundClientsConnectedMsg())
+						continue
+					}
 				}
 			}
+
 			fmt.Println("Stopping Steampipe service.")
 			if _, err := db_local.StopServices(ctx, false, constants.InvokerService); err != nil {
 				error_helpers.ShowError(ctx, err)
